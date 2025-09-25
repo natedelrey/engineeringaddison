@@ -13,18 +13,25 @@ from urllib.parse import urlparse, urlencode
 # === Configuration ===
 load_dotenv()
 
+def getenv_int(name: str, default: int | None = None) -> int | None:
+    val = os.getenv(name)
+    try:
+        return int(val) if val else default
+    except ValueError:
+        return default
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Channels / roles
-ANNOUNCEMENT_CHANNEL_ID = int(os.getenv("ANNOUNCEMENT_CHANNEL_ID"))
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
-COMMAND_LOG_CHANNEL_ID = int(os.getenv("COMMAND_LOG_CHANNEL_ID", "0"))
-ACTIVITY_LOG_CHANNEL_ID = int(os.getenv("ACTIVITY_LOG_CHANNEL_ID", "0"))
-ANNOUNCEMENT_ROLE_ID = int(os.getenv("ANNOUNCEMENT_ROLE_ID", "0"))  # optional; can gate /announce by mgmt instead
-MANAGEMENT_ROLE_ID = int(os.getenv("MANAGEMENT_ROLE_ID"))
+# Channels / roles (safe parsing)
+ANNOUNCEMENT_CHANNEL_ID = getenv_int("ANNOUNCEMENT_CHANNEL_ID")
+LOG_CHANNEL_ID = getenv_int("LOG_CHANNEL_ID")
+COMMAND_LOG_CHANNEL_ID = getenv_int("COMMAND_LOG_CHANNEL_ID")
+ACTIVITY_LOG_CHANNEL_ID = getenv_int("ACTIVITY_LOG_CHANNEL_ID")
+ANNOUNCEMENT_ROLE_ID = getenv_int("ANNOUNCEMENT_ROLE_ID", 0)  # optional; 0 means disabled
+MANAGEMENT_ROLE_ID = getenv_int("MANAGEMENT_ROLE_ID")
 
-DEPARTMENT_ROLE_ID = int(os.getenv("DEPARTMENT_ROLE_ID", "0"))   # E&L dept role
-INTERN_ROLE_ID = int(os.getenv("INTERN_ROLE_ID", "0"))           # “E&L Intern” role (triggers seminar window)
+DEPARTMENT_ROLE_ID = getenv_int("DEPARTMENT_ROLE_ID", 0)  # E&L dept role
+INTERN_ROLE_ID = getenv_int("INTERN_ROLE_ID", 0)          # “E&L Intern” role (triggers seminar window)
 
 # DB / API
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -46,7 +53,7 @@ ROBLOX_REMOVE_SECRET = os.getenv("ROBLOX_REMOVE_SECRET") or None
 ROBLOX_GROUP_ID = os.getenv("ROBLOX_GROUP_ID")  # used to filter ranks if your service supports it
 
 # Rank manager role (can run /rank)
-RANK_MANAGER_ROLE_ID = int(os.getenv("RANK_MANAGER_ROLE_ID", str(MANAGEMENT_ROLE_ID)))
+RANK_MANAGER_ROLE_ID = getenv_int("RANK_MANAGER_ROLE_ID", MANAGEMENT_ROLE_ID or 0)
 
 # Weekly configs
 WEEKLY_REQUIREMENT = int(os.getenv("WEEKLY_REQUIREMENT", "3"))
@@ -113,7 +120,7 @@ class EL_BOT(commands.Bot):
             print(f"Failed to connect to the database: {e}")
             return
 
-        # Schema (same as MD so you can reuse the DB)
+        # Schema (shared with MD style)
         async with self.db_pool.acquire() as connection:
             await connection.execute('''
                 CREATE TABLE IF NOT EXISTS weekly_tasks (
@@ -209,6 +216,7 @@ class EL_BOT(commands.Bot):
         await site.start()
         print("Web server for Roblox integration is running on :8080.")
 
+    # --- Roblox webhook: now with activity embeds ---
     async def roblox_handler(self, request):
         if request.headers.get("X-Secret-Key") != API_SECRET_KEY:
             return web.Response(status=401)
@@ -229,7 +237,17 @@ class EL_BOT(commands.Bot):
                         "ON CONFLICT (roblox_id) DO UPDATE SET start_time = $2",
                         roblox_id, utcnow()
                     )
+                # Activity embed
+                member = find_member(int(discord_id))
+                name = member.display_name if member else f"User {discord_id}"
+                await send_activity_embed(
+                    "🟢 Joined Site",
+                    f"**{name}** started a session.",
+                    discord.Color.green()
+                )
+
             elif status == "left":
+                session_start = None
                 async with self.db_pool.acquire() as connection:
                     session_start = await connection.fetchval(
                         "SELECT start_time FROM roblox_sessions WHERE roblox_id = $1", roblox_id
@@ -242,6 +260,23 @@ class EL_BOT(commands.Bot):
                             "ON CONFLICT (member_id) DO UPDATE SET time_spent = roblox_time.time_spent + $2",
                             discord_id, int(duration)
                         )
+                # Activity embed with minutes
+                mins = int((utcnow() - session_start).total_seconds() // 60) if session_start else 0
+                # Also fetch their weekly total to display
+                weekly_minutes = 0
+                async with self.db_pool.acquire() as connection:
+                    total_seconds = await connection.fetchval(
+                        "SELECT time_spent FROM roblox_time WHERE member_id=$1", discord_id
+                    ) or 0
+                weekly_minutes = total_seconds // 60
+                member = find_member(int(discord_id))
+                name = member.display_name if member else f"User {discord_id}"
+                await send_activity_embed(
+                    "🔴 Left Site",
+                    f"**{name}** ended their session. Time this session: **{mins} min**.\nThis week: **{weekly_minutes}/{WEEKLY_TIME_REQUIREMENT} min**",
+                    discord.Color.red()
+                )
+
         return web.Response(status=200)
 
 bot = EL_BOT()
@@ -280,6 +315,26 @@ async def log_action(title: str, description: str):
         return
     embed = discord.Embed(title=title, description=description, color=discord.Color.dark_gray(), timestamp=utcnow())
     await ch.send(embed=embed)
+
+def channel_or_fallback():
+    ch = bot.get_channel(ACTIVITY_LOG_CHANNEL_ID) if ACTIVITY_LOG_CHANNEL_ID else None
+    if not ch:
+        ch = bot.get_channel(COMMAND_LOG_CHANNEL_ID) if COMMAND_LOG_CHANNEL_ID else None
+    return ch
+
+async def send_activity_embed(title: str, desc: str, color: discord.Color):
+    ch = channel_or_fallback()
+    if not ch:
+        return
+    embed = discord.Embed(title=title, description=desc, color=color, timestamp=utcnow())
+    await ch.send(embed=embed)
+
+def find_member(discord_id: int) -> discord.Member | None:
+    for g in bot.guilds:
+        m = g.get_member(discord_id)
+        if m:
+            return m
+    return None
 
 # Internship Seminar helpers
 async def ensure_intern_record(member: discord.Member):
@@ -343,7 +398,7 @@ async def fetch_group_ranks():
     base = ROBLOX_SERVICE_BASE.rstrip('/') + '/ranks'
     q = {}
     if ROBLOX_GROUP_ID:
-        q["groupId"] = ROBLOX_GROUP_ID
+        q["groupId"] = ROBLOX_GROUP_ID  # if your service reads it
     url = base + (("?" + urlencode(q)) if q else "")
     try:
         async def do_get():
@@ -369,8 +424,12 @@ async def set_group_rank(roblox_id: int, role_id: int = None, rank_number: int =
     if rank_number is not None:
         body["rankNumber"] = int(rank_number)
     if ROBLOX_GROUP_ID:
-        body["groupId"] = int(ROBLOX_GROUP_ID)
+        try:
+            body["groupId"] = int(ROBLOX_GROUP_ID)
+        except:
+            pass
     try:
+    # POST
         async def do_post():
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=body, headers={"X-Secret-Key": ROBLOX_REMOVE_SECRET, "Content-Type": "application/json"}, timeout=20) as resp:
@@ -439,7 +498,7 @@ async def verify(interaction: discord.Interaction, roblox_username: str):
 
 # /announce (gate by mgmt if you don’t want a separate announcement role)
 @bot.tree.command(name="announce", description="Open a form to send an announcement.")
-@app_commands.checks.has_role(MANAGEMENT_ROLE_ID if ANNOUNCEMENT_ROLE_ID == 0 else ANNOUNCEMENT_ROLE_ID)
+@app_commands.checks.has_role(MANAGEMENT_ROLE_ID if (ANNOUNCEMENT_ROLE_ID or 0) == 0 else ANNOUNCEMENT_ROLE_ID)
 @app_commands.choices(color=[
     app_commands.Choice(name="Blue", value="blue"),
     app_commands.Choice(name="Green", value="green"),
@@ -457,9 +516,9 @@ async def announce(interaction: discord.Interaction, color: str = "blue"):
         ann_title = discord.ui.TextInput(label='Title', placeholder='Announcement title', style=discord.TextStyle.short, required=True, max_length=200)
         ann_message = discord.ui.TextInput(label='Message', placeholder='Write your announcement here…', style=discord.TextStyle.paragraph, required=True, max_length=4000)
         async def on_submit(self, interaction2: discord.Interaction):
-            ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID) if ANNOUNCEMENT_CHANNEL_ID else None
             if not ch:
-                await interaction2.response.send_message("Announcement channel not found.", ephemeral=True)
+                await interaction2.response.send_message("Announcement channel not found or not set.", ephemeral=True)
                 return
             await send_long_embed(
                 target=ch,
@@ -485,9 +544,9 @@ async def log_task(interaction: discord.Interaction, task_type: str, proof: disc
             self.task_type = task_type
         comments = discord.ui.TextInput(label='Comments', placeholder='Any additional comments?', style=discord.TextStyle.paragraph, required=False, max_length=1000)
         async def on_submit(self, interaction2: discord.Interaction):
-            log_channel = bot.get_channel(LOG_CHANNEL_ID)
+            log_channel = bot.get_channel(LOG_CHANNEL_ID) if LOG_CHANNEL_ID else None
             if not log_channel:
-                await interaction2.response.send_message("Log channel not found.", ephemeral=True)
+                await interaction2.response.send_message("Log channel not found or not set.", ephemeral=True)
                 return
             member_id = interaction2.user.id
             comments_str = self.comments.value or "No comments"
@@ -806,7 +865,7 @@ async def seminar_extend(interaction: discord.Interaction, member: discord.Membe
         ephemeral=True
     )
 
-# Strike helpers/commands (unchanged except naming)
+# Strike helpers/commands
 async def issue_strike(member: discord.Member, reason: str, *, set_by: int | None, auto: bool) -> int:
     now = utcnow()
     expires = now + datetime.timedelta(days=90)
@@ -894,17 +953,16 @@ async def check_weekly_tasks():
         is_excused_row = await conn.fetchrow("SELECT week_key, reason FROM activity_excuses WHERE week_key=$1", wk)
     excused_reason = is_excused_row["reason"] if is_excused_row else None
 
-    announcement_channel = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+    announcement_channel = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID) if ANNOUNCEMENT_CHANNEL_ID else None
     if not announcement_channel:
-        print("Weekly check failed: Announcement channel not found.")
+        print("Weekly check warning: Announcement channel not configured.")
+
+    guild = announcement_channel.guild if announcement_channel else (bot.guilds[0] if bot.guilds else None)
+    if not guild:
+        print("Weekly check aborted: no guild context.")
         return
 
-    guild = announcement_channel.guild
     dept_role = guild.get_role(DEPARTMENT_ROLE_ID) if DEPARTMENT_ROLE_ID else None
-    if not dept_role:
-        print("Weekly check warning: Department role not configured/found. Report will cover anyone who logged this week.")
-
-    # If dept role configured, restrict checks to that role
     dept_member_ids = {m.id for m in (dept_role.members if dept_role else guild.members) if not m.bot}
 
     async with bot.db_pool.acquire() as conn:
@@ -960,13 +1018,16 @@ async def check_weekly_tasks():
     summary += f"**🚫 0 Activity ({len(zero)}):**\n{fmt_zero(zero)}\n\n"
     summary += "Weekly counts will now be reset."
 
-    await send_long_embed(
-        target=announcement_channel,
-        title=title,
-        description=summary,
-        color=discord.Color.gold(),
-        footer_text=None
-    )
+    if announcement_channel:
+        await send_long_embed(
+            target=announcement_channel,
+            title=title,
+            description=summary,
+            color=discord.Color.gold(),
+            footer_text=None
+        )
+    else:
+        await log_action(title, summary)
 
     # Issue strikes for not-met (if NOT excused)
     if not excused_reason:
@@ -1010,26 +1071,21 @@ async def internship_seminar_loop():
 
             # 5-day warning (one-time)
             if (not warned) and datetime.timedelta(days=4, hours=23) <= remaining <= datetime.timedelta(days=5, hours=1):
-                # Send to command log if present (or announcements if you prefer)
-                ch = bot.get_channel(COMMAND_LOG_CHANNEL_ID) or bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+                ch = bot.get_channel(COMMAND_LOG_CHANNEL_ID) or (bot.get_channel(ANNOUNCEMENT_CHANNEL_ID) if ANNOUNCEMENT_CHANNEL_ID else None)
                 if ch:
-                    for g in bot.guilds:
-                        member = g.get_member(discord_id)
-                        if member:
-                            pretty = human_remaining(remaining)
-                            await ch.send(
-                                f"{member.mention} hasn’t completed their **Internship Seminar** yet and has **{pretty}** remaining. Please check in with them."
-                            )
-                            async with bot.db_pool.acquire() as conn2:
-                                await conn2.execute("UPDATE internship_seminars SET warned_5d = TRUE WHERE discord_id = $1", discord_id)
-                            break
+                    member = find_member(discord_id)
+                    mention = member.mention if member else f"<@{discord_id}>"
+                    pretty = human_remaining(remaining)
+                    await ch.send(
+                        f"{mention} hasn’t completed their **Internship Seminar** yet and has **{pretty}** remaining. Please check in with them."
+                    )
+                    async with bot.db_pool.acquire() as conn2:
+                        await conn2.execute("UPDATE internship_seminars SET warned_5d = TRUE WHERE discord_id = $1", discord_id)
 
             # Overdue enforcement (only once)
             if remaining <= datetime.timedelta(seconds=0) and not expired_handled:
-                for g in bot.guilds:
-                    member = g.get_member(discord_id)
-                    if not member:
-                        continue
+                member = find_member(discord_id)
+                if member:
                     try:
                         await member.send(
                             "Hi — automatic notice from **Engineering & Logistics**.\n\n"
@@ -1050,12 +1106,11 @@ async def internship_seminar_loop():
 
                     await log_action(
                         "Internship Seminar Expiry Enforced",
-                        f"Member: <@{discord_id}>\nRoblox removal: {'✅' if roblox_removed else 'Skipped/Failed ❌'}\nDiscord kick: {'✅' if kicked else '❌'}"
+                        f"Member: {member.mention}\nRoblox removal: {'✅' if roblox_removed else 'Skipped/Failed ❌'}\nDiscord kick: {'✅' if kicked else '❌'}"
                     )
 
                     async with bot.db_pool.acquire() as conn3:
                         await conn3.execute("UPDATE internship_seminars SET expired_handled = TRUE WHERE discord_id = $1", discord_id)
-                    break
     except Exception as e:
         print(f"internship_seminar_loop error: {e}")
 
