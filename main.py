@@ -751,21 +751,47 @@ async def removelastlog(interaction: discord.Interaction, member: discord.Member
         ephemeral=True
     )
 
-# /welcome — E&L flavor
+# /welcome — compact, mobile-friendly, with guidelines + verify + 2-week reminder
 @bot.tree.command(name="welcome", description="Sends the official E&L welcome message.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
 async def welcome(interaction: discord.Interaction):
-    msg = (
-        "Welcome to **Engineering & Logistics**!\n\n"
-        ":one: Review our internal docs and project boards pinned in this server.\n"
-        ":two: If you’re an **E&L Intern**, complete your **Internship Seminar** within 2 weeks—book with management.\n"
-        ":three: Use **/verify** with your ROBLOX username so your on-site activity is tracked.\n\n"
-        "Let’s keep the facility running smoothly. 🛠️📦"
-    )
-    embed = discord.Embed(title="Welcome to E&L!", description=msg, color=discord.Color.green())
-    embed.set_footer(text="Best,\nE&L Management Team")
+    class WelcomeLinks(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=None)
+            self.add_item(
+                discord.ui.Button(
+                    label="E&L Guidelines",
+                    url="https://trello.com/b/N1nrWeG4/el-information-hub"
+                )
+            )
 
-    await interaction.channel.send(embed=embed)
+    embed = discord.Embed(
+        title="Welcome to Engineering & Logistics!",
+        description="We keep the facility running — maintenance, logistics, and systems.",
+        color=discord.Color.green(),
+        timestamp=utcnow()
+    )
+
+    # Short, field-based layout to avoid mobile truncation
+    embed.add_field(
+        name="1) Start here",
+        value="Review the **E&L Guidelines** (button below).",
+        inline=False
+    )
+    embed.add_field(
+        name="2) Verify & tracking",
+        value="Run **/verify <roblox_username>** so your on-site time and tasks start tracking to your account.",
+        inline=False
+    )
+    embed.add_field(
+        name="3) Intern Seminar",
+        value="If you hold the **E&L Intern** role, you have **2 weeks** to complete your **Internship Seminar**. Contact management to schedule.",
+        inline=False
+    )
+
+    embed.set_footer(text="Questions? Ping E&L Management • Stay safe, stay efficient.")
+
+    await interaction.channel.send(embed=embed, view=WelcomeLinks())
     await log_action("Welcome Sent", f"By: {interaction.user.mention} • Channel: {interaction.channel.mention}")
     await interaction.response.send_message("Welcome message sent!", ephemeral=True)
 
