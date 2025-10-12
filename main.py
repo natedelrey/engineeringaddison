@@ -106,6 +106,38 @@ def week_key(dt: datetime.datetime | None = None) -> str:
     iso = d.isocalendar()
     return f"{iso.year}-W{iso.week:02d}"
 
+# === Excuse helpers (NEW) ===
+def _valid_week_key(s: str) -> bool:
+    # Accepts YYYY-WWW (ISO week, zero-padded)
+    try:
+        if len(s) != 8 or s[4] != '-' or s[5] != 'W':
+            return False
+        year = int(s[:4])
+        week = int(s[6:8])
+        return 1 <= week <= 53 and 1900 <= year <= 3000
+    except:
+        return False
+
+def _resolve_week_key(arg: str | None) -> str:
+    """
+    Convert a user-supplied week argument into a proper ISO week key.
+    Accepts: None/'', 'current', 'prev', 'previous', 'last', 'next', or a literal 'YYYY-Www'.
+    """
+    if not arg:
+        return week_key()
+    val = arg.strip().lower()
+    if val in ("current", "this", "now"):
+        return week_key()
+    base = utcnow()
+    if val in ("prev", "previous", "last"):
+        return week_key(base - datetime.timedelta(weeks=1))
+    if val in ("next",):
+        return week_key(base + datetime.timedelta(weeks=1))
+    if _valid_week_key(arg):
+        return arg
+    # Fallback to current if format is wrong
+    return week_key()
+
 class EL_BOT(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix='!', intents=intents)
@@ -350,7 +382,7 @@ async def ensure_intern_record(member: discord.Member):
         assigned = utcnow()
         deadline = assigned + datetime.timedelta(days=14)
         await conn.execute(
-            "INSERT INTO internship_seminars (discord_id, assigned_at, deadline, passed, warned_5d, expired_handled) "
+            "INSERT INTO internship_seminars (discord_id, assigned_at, deadline, passed, passed_at, warned_5d, expired_handled) "
             "VALUES ($1, $2, $3, FALSE, FALSE, FALSE)",
             member.id, assigned, deadline
         )
@@ -429,7 +461,6 @@ async def set_group_rank(roblox_id: int, role_id: int = None, rank_number: int =
         except:
             pass
     try:
-    # POST
         async def do_post():
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=body, headers={"X-Secret-Key": ROBLOX_REMOVE_SECRET, "Content-Type": "application/json"}, timeout=20) as resp:
@@ -496,7 +527,7 @@ async def verify(interaction: discord.Interaction, roblox_username: str):
             else:
                 await interaction.response.send_message("There was an error looking up the Roblox user.", ephemeral=True)
 
-# /announce (gate by mgmt if you don’t want a separate announcement role)
+# /announce
 @bot.tree.command(name="announce", description="Open a form to send an announcement.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID if (ANNOUNCEMENT_ROLE_ID or 0) == 0 else ANNOUNCEMENT_ROLE_ID)
 @app_commands.choices(color=[
@@ -751,7 +782,7 @@ async def removelastlog(interaction: discord.Interaction, member: discord.Member
         ephemeral=True
     )
 
-# /welcome — compact, mobile-friendly, with guidelines + verify + 2-week reminder
+# /welcome — compact
 @bot.tree.command(name="welcome", description="Sends the official E&L welcome message.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
 async def welcome(interaction: discord.Interaction):
@@ -772,7 +803,6 @@ async def welcome(interaction: discord.Interaction):
         timestamp=utcnow()
     )
 
-    # Short, field-based layout to avoid mobile truncation
     embed.add_field(
         name="1) Start here",
         value="Review the **E&L Guidelines** (button below).",
@@ -1088,7 +1118,7 @@ async def internship_seminar_loop():
         for r in rows:
             discord_id = r["discord_id"]
             deadline = r["deadline"]
-            warned = r["warned_5d"]
+            warned_5d = r["warned_5d"]
             expired_handled = r["expired_handled"]
             if not deadline:
                 continue
@@ -1096,7 +1126,7 @@ async def internship_seminar_loop():
             remaining = deadline - now
 
             # 5-day warning (one-time)
-            if (not warned) and datetime.timedelta(days=4, hours=23) <= remaining <= datetime.timedelta(days=5, hours=1):
+            if (not warned_5d) and datetime.timedelta(days=4, hours=23) <= remaining <= datetime.timedelta(days=5, hours=1):
                 ch = bot.get_channel(COMMAND_LOG_CHANNEL_ID) or (bot.get_channel(ANNOUNCEMENT_CHANNEL_ID) if ANNOUNCEMENT_CHANNEL_ID else None)
                 if ch:
                     member = find_member(discord_id)
@@ -1144,7 +1174,7 @@ async def internship_seminar_loop():
 async def before_internship_loop():
     await bot.wait_until_ready()
 
-# /rank (autocomplete from Roblox service)
+# --- Autocompletes ---
 async def group_role_autocomplete(interaction: discord.Interaction, current: str):
     current_lower = (current or "").lower()
     roles = await fetch_group_ranks()
@@ -1159,6 +1189,99 @@ async def group_role_autocomplete(interaction: discord.Interaction, current: str
             break
     return out
 
+# NEW: Week autocomplete for excuse commands
+async def week_autocomplete(_: discord.Interaction, current: str):
+    now = utcnow()
+    choices = []
+    labels = []
+
+    wk_prev = week_key(now - datetime.timedelta(weeks=1))
+    wk_curr = week_key(now)
+    wk_next = week_key(now + datetime.timedelta(weeks=1))
+    labels.extend([("Previous (" + wk_prev + ")", wk_prev),
+                   ("Current (" + wk_curr + ")", wk_curr),
+                   ("Next (" + wk_next + ")", wk_next)])
+
+    for i in range(2, 8):
+        w = week_key(now - datetime.timedelta(weeks=i))
+        labels.append((w, w))
+
+    cur = (current or "").lower()
+    for name, value in labels:
+        if not cur or cur in name.lower() or cur in value.lower():
+            choices.append(app_commands.Choice(name=name, value=value))
+        if len(choices) >= 25:
+            break
+    return choices
+
+# === Excuse slash commands (NEW) ===
+@bot.tree.command(name="excuse_set", description="(Mgmt) Mark an ISO week as excused from weekly quota & strikes.")
+@app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
+@app_commands.autocomplete(week=week_autocomplete)
+async def excuse_set(
+    interaction: discord.Interaction,
+    reason: str,
+    week: str | None = None
+):
+    wk = _resolve_week_key(week)
+    async with bot.db_pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO activity_excuses (week_key, reason, set_by, set_at) "
+            "VALUES ($1, $2, $3, $4) "
+            "ON CONFLICT (week_key) DO UPDATE SET reason = EXCLUDED.reason, set_by = EXCLUDED.set_by, set_at = EXCLUDED.set_at",
+            wk, reason, interaction.user.id, utcnow()
+        )
+    await log_action("Week Excused", f"By: {interaction.user.mention}\nWeek: **{wk}**\nReason: {reason}")
+    await interaction.response.send_message(
+        f"✅ Marked **{wk}** as **EXCUSED**. Reason: *{reason}*",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="excuse_clear", description="(Mgmt) Clear the excuse for an ISO week.")
+@app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
+@app_commands.autocomplete(week=week_autocomplete)
+async def excuse_clear(
+    interaction: discord.Interaction,
+    week: str | None = None
+):
+    wk = _resolve_week_key(week)
+    async with bot.db_pool.acquire() as conn:
+        rec = await conn.fetchrow("SELECT reason FROM activity_excuses WHERE week_key=$1", wk)
+        if not rec:
+            await interaction.response.send_message(f"No excuse set for **{wk}**.", ephemeral=True)
+            return
+        await conn.execute("DELETE FROM activity_excuses WHERE week_key=$1", wk)
+    await log_action("Week Excuse Cleared", f"By: {interaction.user.mention}\nWeek: **{wk}**")
+    await interaction.response.send_message(f"🧹 Cleared excuse for **{wk}**.", ephemeral=True)
+
+@bot.tree.command(name="excuse_view", description="View the excuse (if any) for an ISO week.")
+@app_commands.autocomplete(week=week_autocomplete)
+async def excuse_view(
+    interaction: discord.Interaction,
+    week: str | None = None
+):
+    wk = _resolve_week_key(week)
+    async with bot.db_pool.acquire() as conn:
+        rec = await conn.fetchrow(
+            "SELECT reason, set_by, set_at FROM activity_excuses WHERE week_key=$1",
+            wk
+        )
+    if not rec:
+        await interaction.response.send_message(f"**{wk}** is not excused.", ephemeral=True)
+        return
+
+    setter = find_member(int(rec["set_by"])) if rec["set_by"] else None
+    setter_name = setter.mention if setter else (f"<@{rec['set_by']}>" if rec["set_by"] else "Unknown")
+    when = rec["set_at"].strftime("%Y-%m-%d %H:%M UTC") if rec["set_at"] else "unknown"
+    embed = discord.Embed(
+        title=f"📅 Excuse for {wk}",
+        description=f"**Reason:** {rec['reason']}\n**Set by:** {setter_name}\n**Set at:** {when}",
+        color=discord.Color.light_grey(),
+        timestamp=utcnow()
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# /rank (autocomplete from Roblox service)
 @bot.tree.command(name="rank", description="(Rank Manager) Set a member's Roblox/Discord rank to a group role.")
 @app_commands.checks.has_role(RANK_MANAGER_ROLE_ID)
 @app_commands.autocomplete(group_role=group_role_autocomplete)
