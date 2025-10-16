@@ -67,23 +67,19 @@ intents.message_content = True
 
 # E&L task catalog (rename as you like)
 TASK_TYPES = [
-    "Maintenance Ticket",
-    "Logistics Delivery",
-    "Equipment Repair",
-    "Safety Inspection",
-    "Systems Calibration",
-    "Supply Restock",
-    "Facility Upgrade",
+    "Generator Stress Test",
+    "Generator Repair",
+    "Window Repair",
+    "Alarm Test",
+    "Sewer Repair",
 ]
 
 TASK_PLURALS = {
-    "Maintenance Ticket": "Maintenance Tickets",
-    "Logistics Delivery": "Logistics Deliveries",
-    "Equipment Repair": "Equipment Repairs",
-    "Safety Inspection": "Safety Inspections",
-    "Systems Calibration": "Systems Calibrations",
-    "Supply Restock": "Supply Restocks",
-    "Facility Upgrade": "Facility Upgrades",
+    "Generator Stress Test": "Generator Stress Tests",
+    "Generator Repair": "Generator Repairs",
+    "Window Repair": "Window Repairs",
+    "Alarm Test": "Alarm Tests",
+    "Sewer Repair": "Sewer Repairs",
 }
 
 def utcnow():
