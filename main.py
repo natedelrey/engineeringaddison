@@ -231,6 +231,15 @@ class EL_BOT(commands.Bot):
                     set_at TIMESTAMPTZ
                 );
             ''')
+            await connection.execute('''
+                CREATE TABLE IF NOT EXISTS member_activity_excuses (
+                    member_id BIGINT PRIMARY KEY,
+                    reason TEXT,
+                    expires_at TIMESTAMPTZ,
+                    set_by BIGINT,
+                    set_at TIMESTAMPTZ
+                );
+            ''')
 
         # Sync slash commands
         try:
@@ -999,6 +1008,41 @@ async def strikes_view(interaction: discord.Interaction, member: discord.Member 
     embed = discord.Embed(title=f"Strikes for {target.display_name}", description=desc, color=discord.Color.orange(), timestamp=utcnow())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# === Activity Excuse Commands ===
+@bot.tree.command(name="excuse", description="(Mgmt) Excuse a member from weekly requirements for a number of days.")
+@app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
+async def excuse_member(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    days: app_commands.Range[int, 1, 60],
+    reason: str
+):
+    now = utcnow()
+    expires_at = now + datetime.timedelta(days=days)
+    clean_reason = reason.strip() or "No reason provided"
+    async with bot.db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO member_activity_excuses (member_id, reason, expires_at, set_by, set_at)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (member_id) DO UPDATE
+            SET reason = EXCLUDED.reason,
+                expires_at = EXCLUDED.expires_at,
+                set_by = EXCLUDED.set_by,
+                set_at = EXCLUDED.set_at
+            """,
+            member.id, clean_reason, expires_at, interaction.user.id, now
+        )
+
+    await log_action(
+        "Activity Excuse Granted",
+        f"Member: {member.mention}\nUntil: {expires_at.strftime('%Y-%m-%d %H:%M UTC')}\nReason: {clean_reason}"
+    )
+    await interaction.response.send_message(
+        f"Excused {member.mention} until **{expires_at.strftime('%Y-%m-%d %H:%M UTC')}**. Reason: {clean_reason}",
+        ephemeral=True
+    )
+
 # === Weekly check + reset (Sundays UTC) ===
 @tasks.loop(time=datetime.time(hour=4, minute=0, tzinfo=datetime.timezone.utc))
 async def check_weekly_tasks():
@@ -1006,8 +1050,15 @@ async def check_weekly_tasks():
         return
     wk = week_key()
     async with bot.db_pool.acquire() as conn:
+        now = utcnow()
+        await conn.execute("DELETE FROM member_activity_excuses WHERE expires_at <= $1", now)
         is_excused_row = await conn.fetchrow("SELECT week_key, reason FROM activity_excuses WHERE week_key=$1", wk)
+        member_excuse_rows = await conn.fetch(
+            "SELECT member_id, reason, expires_at FROM member_activity_excuses WHERE expires_at > $1",
+            now
+        )
     excused_reason = is_excused_row["reason"] if is_excused_row else None
+    member_excuses = {row["member_id"]: row for row in member_excuse_rows}
 
     announcement_channel = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID) if ANNOUNCEMENT_CHANNEL_ID else None
     if not announcement_channel:
@@ -1034,12 +1085,17 @@ async def check_weekly_tasks():
     tasks_map = {r['member_id']: r['tasks_completed'] for r in all_tasks if r['member_id'] in dept_member_ids}
     time_map = {r['member_id']: r['time_spent'] for r in all_time if r['member_id'] in dept_member_ids}
 
-    met, not_met, zero = [], [], []
+    met, not_met, zero, excused_members = [], [], [], []
     considered_ids = set(tasks_map.keys()) | set(time_map.keys())
 
     for member_id in considered_ids:
         member = guild.get_member(member_id)
         if not member:
+            continue
+        if member_id in member_excuses:
+            row = member_excuses[member_id]
+            sc = strike_counts.get(member_id, 0)
+            excused_members.append((member, row["reason"], row["expires_at"], sc))
             continue
         tasks_done = tasks_map.get(member_id, 0)
         time_done_minutes = (time_map.get(member_id, 0)) // 60
@@ -1053,6 +1109,11 @@ async def check_weekly_tasks():
     for mid in zero_ids:
         member = guild.get_member(mid)
         if member:
+            if mid in member_excuses:
+                row = member_excuses[mid]
+                sc = strike_counts.get(mid, 0)
+                excused_members.append((member, row["reason"], row["expires_at"], sc))
+                continue
             sc = strike_counts.get(mid, 0)
             zero.append((member, sc))
 
@@ -1065,6 +1126,12 @@ async def check_weekly_tasks():
     def fmt_zero(lst):
         return ", ".join(f"{m.mention} (strikes: {sc})" for m, sc in lst) if lst else "—"
 
+    def fmt_excused(lst):
+        return "\n".join(
+            f"{m.mention} — until **{exp.strftime('%Y-%m-%d')}** (strikes: {sc})\nReason: {rsn}"
+            for m, rsn, exp, sc in lst
+        ) if lst else "—"
+
     title = "Weekly Task Summary"
     summary = f"--- Weekly Task Report (**{wk}**){' — EXCUSED' if excused_reason else ''} ---\n\n"
     if excused_reason:
@@ -1072,6 +1139,7 @@ async def check_weekly_tasks():
     summary += f"**✅ Met Requirement ({len(met)}):**\n{fmt_met(met)}\n\n"
     summary += f"**❌ Below Quota ({len(not_met)}):**\n{fmt_not_met(not_met)}\n\n"
     summary += f"**🚫 0 Activity ({len(zero)}):**\n{fmt_zero(zero)}\n\n"
+    summary += f"**🛌 Excused Members ({len(excused_members)}):**\n{fmt_excused(excused_members)}\n\n"
     summary += "Weekly counts will now be reset."
 
     if announcement_channel:
