@@ -318,6 +318,32 @@ class EL_BOT(commands.Bot):
 
 bot = EL_BOT()
 
+# Slash command groups for better organization
+tasks_group = app_commands.Group(
+    name="tasks",
+    description="Task logging and reporting tools"
+)
+
+comms_group = app_commands.Group(
+    name="comms",
+    description="Communication utilities"
+)
+
+seminar_group = app_commands.Group(
+    name="seminar",
+    description="Internship Seminar management"
+)
+
+strikes_group = app_commands.Group(
+    name="strikes",
+    description="Strike tracking and management"
+)
+
+excuses_group = app_commands.Group(
+    name="excuses",
+    description="Weekly requirement exceptions"
+)
+
 # === Helpers ===
 def smart_chunk(text, size=4000):
     chunks = []
@@ -532,8 +558,8 @@ async def verify(interaction: discord.Interaction, roblox_username: str):
             else:
                 await interaction.response.send_message("There was an error looking up the Roblox user.", ephemeral=True)
 
-# /announce
-@bot.tree.command(name="announce", description="Open a form to send an announcement.")
+# /comms announce
+@comms_group.command(name="announce", description="Open a form to send an announcement.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID if (ANNOUNCEMENT_ROLE_ID or 0) == 0 else ANNOUNCEMENT_ROLE_ID)
 @app_commands.choices(color=[
     app_commands.Choice(name="Blue", value="blue"),
@@ -544,7 +570,7 @@ async def verify(interaction: discord.Interaction, roblox_username: str):
     app_commands.Choice(name="Orange", value="orange"),
     app_commands.Choice(name="Gold", value="gold"),
 ])
-async def announce(interaction: discord.Interaction, color: str = "blue"):
+async def comms_announce(interaction: discord.Interaction, color: str = "blue"):
     class AnnouncementForm(discord.ui.Modal, title='Send Announcement'):
         def __init__(self, color_obj: discord.Color):
             super().__init__()
@@ -569,8 +595,8 @@ async def announce(interaction: discord.Interaction, color: str = "blue"):
     color_obj = getattr(discord.Color, color, discord.Color.blue)()
     await interaction.response.send_modal(AnnouncementForm(color_obj=color_obj))
 
-# /log — task log with proof
-@bot.tree.command(name="log", description="Log a completed E&L task with proof.")
+# /tasks log — task log with proof
+@tasks_group.command(name="log", description="Log a completed E&L task with proof.")
 @app_commands.choices(task_type=[app_commands.Choice(name=t, value=t) for t in TASK_TYPES])
 async def log_task(interaction: discord.Interaction, task_type: str, proof: discord.Attachment):
     class LogTaskForm(discord.ui.Modal, title='Add Comments (optional)'):
@@ -626,9 +652,9 @@ async def log_task(interaction: discord.Interaction, task_type: str, proof: disc
 
     await interaction.response.send_modal(LogTaskForm(proof=proof, task_type=task_type))
 
-# /mytasks
-@bot.tree.command(name="mytasks", description="Check your weekly tasks and time.")
-async def mytasks(interaction: discord.Interaction):
+# /tasks status
+@tasks_group.command(name="status", description="Check your weekly tasks and time.")
+async def tasks_status(interaction: discord.Interaction):
     member_id = interaction.user.id
     async with bot.db_pool.acquire() as conn:
         tasks_completed = await conn.fetchval("SELECT tasks_completed FROM weekly_tasks WHERE member_id = $1", member_id) or 0
@@ -641,9 +667,9 @@ async def mytasks(interaction: discord.Interaction):
         ephemeral=True
     )
 
-# /viewtasks
-@bot.tree.command(name="viewtasks", description="Show a member's E&L task totals by type (all-time).")
-async def viewtasks(interaction: discord.Interaction, member: discord.Member | None = None):
+# /tasks history
+@tasks_group.command(name="history", description="Show a member's E&L task totals by type (all-time).")
+async def tasks_history(interaction: discord.Interaction, member: discord.Member | None = None):
     target = member or interaction.user
     async with bot.db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -670,11 +696,11 @@ async def viewtasks(interaction: discord.Interaction, member: discord.Member | N
     await log_action("Viewed Tasks", f"Requester: {interaction.user.mention}\nTarget: {target.mention if target != interaction.user else 'self'}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# /addtask (mgmt)
-@bot.tree.command(name="addtask", description="(Mgmt) Add tasks to a member's history and weekly totals.")
+# /tasks grant (mgmt)
+@tasks_group.command(name="grant", description="(Mgmt) Add tasks to a member's history and weekly totals.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
 @app_commands.choices(task_type=[app_commands.Choice(name=t, value=t) for t in TASK_TYPES])
-async def addtask(
+async def tasks_grant(
     interaction: discord.Interaction,
     member: discord.Member,
     task_type: str,
@@ -725,9 +751,9 @@ async def addtask(
     await log_action("Tasks Added", f"By: {interaction.user.mention}\nMember: {member.mention}\nType: **{task_type}** × {count}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# /leaderboard
-@bot.tree.command(name="leaderboard", description="Displays the weekly leaderboard (tasks + on-site minutes).")
-async def leaderboard(interaction: discord.Interaction):
+# /tasks leaderboard
+@tasks_group.command(name="leaderboard", description="Displays the weekly leaderboard (tasks + on-site minutes).")
+async def tasks_leaderboard(interaction: discord.Interaction):
     async with bot.db_pool.acquire() as conn:
         task_rows = await conn.fetch("SELECT member_id, tasks_completed FROM weekly_tasks")
         time_rows = await conn.fetch("SELECT member_id, time_spent FROM roblox_time")
@@ -760,10 +786,10 @@ async def leaderboard(interaction: discord.Interaction):
     await log_action("Viewed Leaderboard", f"Requester: {interaction.user.mention}")
     await interaction.response.send_message(embed=embed)
 
-# Remove last weekly log (mgmt)
-@bot.tree.command(name="removelastlog", description="(Mgmt) Removes the last logged weekly task for a member.")
+# /tasks remove-last (mgmt)
+@tasks_group.command(name="remove_last", description="(Mgmt) Removes the last logged weekly task for a member.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
-async def removelastlog(interaction: discord.Interaction, member: discord.Member):
+async def tasks_remove_last(interaction: discord.Interaction, member: discord.Member):
     member_id = member.id
     async with bot.db_pool.acquire() as conn:
         async with conn.transaction():
@@ -787,10 +813,10 @@ async def removelastlog(interaction: discord.Interaction, member: discord.Member
         ephemeral=True
     )
 
-# /welcome — compact
-@bot.tree.command(name="welcome", description="Sends the official E&L welcome message.")
+# /comms welcome — compact
+@comms_group.command(name="welcome", description="Sends the official E&L welcome message.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
-async def welcome(interaction: discord.Interaction):
+async def comms_welcome(interaction: discord.Interaction):
     class WelcomeLinks(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=None)
@@ -830,10 +856,10 @@ async def welcome(interaction: discord.Interaction):
     await log_action("Welcome Sent", f"By: {interaction.user.mention} • Channel: {interaction.channel.mention}")
     await interaction.response.send_message("Welcome message sent!", ephemeral=True)
 
-# /dm
-@bot.tree.command(name="dm", description="(Mgmt) Send a direct message to a member.")
+# /comms dm
+@comms_group.command(name="dm", description="(Mgmt) Send a direct message to a member.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
-async def dm(interaction: discord.Interaction, member: discord.Member, title: str, message: str):
+async def comms_dm(interaction: discord.Interaction, member: discord.Member, title: str, message: str):
     if member.bot:
         await interaction.response.send_message("You can't send messages to bots!", ephemeral=True)
         return
@@ -855,9 +881,9 @@ async def dm(interaction: discord.Interaction, member: discord.Member, title: st
         print(f"DM command error: {e}")
 
 # Internship Seminar commands
-@bot.tree.command(name="seminar_passed", description="(Mgmt) Mark a member as having passed their Internship Seminar.")
+@seminar_group.command(name="pass", description="(Mgmt) Mark a member as having passed their Internship Seminar.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
-async def seminar_passed(interaction: discord.Interaction, member: discord.Member):
+async def seminar_mark_passed(interaction: discord.Interaction, member: discord.Member):
     assigned = utcnow()
     deadline = assigned + datetime.timedelta(days=14)
     passed_at = assigned
@@ -878,7 +904,7 @@ async def seminar_passed(interaction: discord.Interaction, member: discord.Membe
     await log_action("Internship Seminar Passed", f"Member: {member.mention}\nBy: {interaction.user.mention}")
     await interaction.response.send_message(f"Marked {member.mention} as **passed their Internship Seminar**.", ephemeral=True)
 
-@bot.tree.command(name="seminar_view", description="View a member's Internship Seminar status.")
+@seminar_group.command(name="view", description="View a member's Internship Seminar status.")
 async def seminar_view(interaction: discord.Interaction, member: discord.Member | None = None):
     target = member or interaction.user
     await ensure_intern_record(target)
@@ -904,7 +930,7 @@ async def seminar_view(interaction: discord.Interaction, member: discord.Member 
     await log_action("Seminar Viewed", f"Requester: {interaction.user.mention}\nTarget: {target.mention if target != interaction.user else 'self'}")
     await interaction.response.send_message(msg, ephemeral=True)
 
-@bot.tree.command(name="seminar_extend", description="(Mgmt) Extend a member's seminar deadline by N days.")
+@seminar_group.command(name="extend", description="(Mgmt) Extend a member's seminar deadline by N days.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
 async def seminar_extend(interaction: discord.Interaction, member: discord.Member, days: app_commands.Range[int, 1, 60], reason: str | None = None):
     await ensure_intern_record(member)
@@ -963,7 +989,7 @@ async def enforce_three_strikes(member: discord.Member):
     await log_action("Three-Strike Removal",
                      f"Member: {member.mention}\nRoblox removal: {'✅' if roblox_removed else '❌/N/A'}\nDiscord kick: {'✅' if kicked else '❌'}")
 
-@bot.tree.command(name="strikes_add", description="(Mgmt) Add a strike to a member.")
+@strikes_group.command(name="add", description="(Mgmt) Add a strike to a member.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
 async def strikes_add(interaction: discord.Interaction, member: discord.Member, reason: str):
     active_after = await issue_strike(member, reason, set_by=interaction.user.id, auto=False)
@@ -971,7 +997,7 @@ async def strikes_add(interaction: discord.Interaction, member: discord.Member, 
         await enforce_three_strikes(member)
     await interaction.response.send_message(f"Strike added to {member.mention}. Active strikes: **{active_after}/3**.", ephemeral=True)
 
-@bot.tree.command(name="strikes_remove", description="(Mgmt) Remove N active strikes from a member (earliest expiring first).")
+@strikes_group.command(name="remove", description="(Mgmt) Remove N active strikes from a member (earliest expiring first).")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
 async def strikes_remove(interaction: discord.Interaction, member: discord.Member, count: app_commands.Range[int, 1, 10] = 1):
     now = utcnow()
@@ -989,7 +1015,7 @@ async def strikes_remove(interaction: discord.Interaction, member: discord.Membe
     await log_action("Strikes Removed", f"Member: {member.mention}\nRemoved: **{len(ids)}**\nActive remaining: **{remaining}/3**")
     await interaction.response.send_message(f"Removed **{len(ids)}** strike(s) from {member.mention}. Active remaining: **{remaining}/3**.", ephemeral=True)
 
-@bot.tree.command(name="strikes_view", description="View a member's active and total strikes.")
+@strikes_group.command(name="view", description="View a member's active and total strikes.")
 async def strikes_view(interaction: discord.Interaction, member: discord.Member | None = None):
     target = member or interaction.user
     now = utcnow()
@@ -1005,7 +1031,7 @@ async def strikes_view(interaction: discord.Interaction, member: discord.Member 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # === Activity Excuse Commands ===
-@bot.tree.command(name="excuse", description="(Mgmt) Excuse a member from weekly requirements for a number of days.")
+@excuses_group.command(name="member", description="(Mgmt) Excuse a member from weekly requirements for a number of days.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
 async def excuse_member(
     interaction: discord.Interaction,
@@ -1279,7 +1305,7 @@ async def week_autocomplete(_: discord.Interaction, current: str):
     return choices
 
 # === Excuse slash commands (NEW) ===
-@bot.tree.command(name="excuse_set", description="(Mgmt) Mark an ISO week as excused from weekly quota & strikes.")
+@excuses_group.command(name="week_set", description="(Mgmt) Mark an ISO week as excused from weekly quota & strikes.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
 @app_commands.autocomplete(week=week_autocomplete)
 async def excuse_set(
@@ -1301,7 +1327,7 @@ async def excuse_set(
         ephemeral=True
     )
 
-@bot.tree.command(name="excuse_clear", description="(Mgmt) Clear the excuse for an ISO week.")
+@excuses_group.command(name="week_clear", description="(Mgmt) Clear the excuse for an ISO week.")
 @app_commands.checks.has_role(MANAGEMENT_ROLE_ID)
 @app_commands.autocomplete(week=week_autocomplete)
 async def excuse_clear(
@@ -1318,7 +1344,7 @@ async def excuse_clear(
     await log_action("Week Excuse Cleared", f"By: {interaction.user.mention}\nWeek: **{wk}**")
     await interaction.response.send_message(f"🧹 Cleared excuse for **{wk}**.", ephemeral=True)
 
-@bot.tree.command(name="excuse_view", description="View the excuse (if any) for an ISO week.")
+@excuses_group.command(name="week_view", description="View the excuse (if any) for an ISO week.")
 @app_commands.autocomplete(week=week_autocomplete)
 async def excuse_view(
     interaction: discord.Interaction,
@@ -1406,6 +1432,13 @@ async def rank(interaction: discord.Interaction, member: discord.Member, group_r
         msg += f" Also assigned Discord role **{assigned_role.name}**."
     await log_action("Rank Set", f"By: {interaction.user.mention}\nMember: {member.mention}\nNew Rank: **{target['name']}**")
     await interaction.response.send_message(msg, ephemeral=True)
+
+# Register grouped slash commands
+bot.tree.add_command(tasks_group)
+bot.tree.add_command(comms_group)
+bot.tree.add_command(seminar_group)
+bot.tree.add_command(strikes_group)
+bot.tree.add_command(excuses_group)
 
 # === Run ===
 if __name__ == "__main__":
